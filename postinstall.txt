@@ -1,0 +1,271 @@
+# Arch Linux Post-Install — Drivers, greetd, Hyprland & Essentials
+
+> How to use this file: run after `archinstall.txt` step 12 (first boot, snapper done).
+> Sections run top-to-bottom. Log in as your user (`arch`), not root; commands use sudo.
+> AMD GPU assumed. Replace every PLACEHOLDER before running a command.
+
+---
+
+## 1. Network & Time
+
+### Connect to the network
+
+```
+nmtui
+# or: nmcli device wifi connect "SSID" password "PASSWORD"
+ping -c 3 archlinux.org
+```
+
+### Time sync
+
+```
+sudo timedatectl set-ntp true
+timedatectl status
+```
+
+Notes:
+- NetworkManager is enabled but Wi-Fi still needs connecting by hand on first boot.
+
+---
+
+## 2. Pacman Setup
+
+### Enable multilib (32-bit libs, needed for Steam/Wine)
+
+```
+sudo nano /etc/pacman.conf
+# uncomment:
+#   [multilib]
+#   Include = /etc/pacman.d/mirrorlist
+```
+
+Optional in the same file: uncomment `Color` and `ParallelDownloads = 5`, add `ILoveCandy`.
+
+### Mirrors & full upgrade
+
+```
+sudo pacman -S --needed reflector pacman-contrib
+sudo reflector --country Lithuania,Latvia,Estonia,Poland,Germany --protocol https --latest 20 --sort rate --save /etc/pacman.d/mirrorlist
+sudo pacman -Syu
+```
+
+### Timers
+
+```
+sudo systemctl enable --now reflector.timer
+sudo systemctl enable --now paccache.timer
+sudo systemctl enable --now fstrim.timer
+```
+
+Notes:
+- `paccache.timer` (from `pacman-contrib`) trims the package cache weekly.
+- `fstrim.timer` = weekly TRIM, only matters on SSD/NVMe.
+- Edit `/etc/xdg/reflector/reflector.conf` if you want the timer to use the same country list.
+
+---
+
+## 3. CPU Microcode
+
+```
+sudo pacman -S --needed amd-ucode
+# Intel CPU instead: intel-ucode
+sudo grub-mkconfig -o /boot/grub/grub.cfg
+```
+
+Notes:
+- Install only the one that matches your CPU.
+- Re-running `grub-mkconfig` makes GRUB load the microcode image.
+
+---
+
+## 4. GPU Drivers (AMD)
+
+### Core Mesa + Vulkan + video acceleration
+
+```
+sudo pacman -S --needed mesa vulkan-radeon libva-mesa-driver mesa-vdpau
+```
+
+### 32-bit versions (needs multilib from step 2)
+
+```
+sudo pacman -S --needed lib32-mesa lib32-vulkan-radeon lib32-libva-mesa-driver lib32-mesa-vdpau
+```
+
+### Tools to verify it works
+
+```
+sudo pacman -S --needed vulkan-tools mesa-utils libva-utils radeontop
+vulkaninfo --summary
+glxinfo -B
+vainfo
+```
+
+Notes:
+- `amdgpu` kernel driver is already in the `linux` kernel and `linux-firmware`; nothing to install for it.
+- Do **not** install `xf86-video-amdgpu` for Wayland/Hyprland — the modesetting driver is used.
+- `radeontop` = live GPU usage.
+- NVIDIA instead: `nvidia-open nvidia-utils lib32-nvidia-utils nvidia-settings`, add `nvidia_drm.modeset=1` to `GRUB_CMDLINE_LINUX_DEFAULT`, rebuild grub.
+
+---
+
+## 5. AUR Helper (yay)
+
+```
+cd /tmp
+git clone https://aur.archlinux.org/paru-bin.git
+cd paru-bin
+makepkg -si
+cd ~
+paru --version
+```
+
+Notes:
+- `base-devel` and `git` are already installed from pacstrap.
+- Use `paru-bin` the same way if you prefer paru.
+
+---
+
+## 6. greetd + tuigreet (Login Manager)
+
+### Install
+
+```
+sudo pacman -S --needed greetd greetd-tuigreet
+```
+
+### Config
+
+```
+sudo nano /etc/greetd/config.toml
+```
+
+Replace the whole file with:
+
+```
+[terminal]
+vt = 1
+
+[default_session]
+command = "tuigreet --time --remember --remember-session --asterisks --sessions /usr/share/wayland-sessions"
+user = "greeter"
+```
+
+### Cache dir for --remember
+
+```
+sudo mkdir -p /var/cache/tuigreet
+sudo chown greeter:greeter /var/cache/tuigreet
+sudo chmod 0755 /var/cache/tuigreet
+```
+
+### Switch over from any other display manager
+
+```
+sudo systemctl disable sddm gdm lightdm 2>/dev/null
+sudo systemctl enable greetd
+```
+
+Notes:
+- Do **not** use `--now` from inside a graphical session; reboot instead.
+- `--sessions /usr/share/wayland-sessions` lists every installed Wayland session (Hyprland, Hyprland uwsm, Plasma Wayland) in a menu; `--remember-session` remembers your last pick.
+- Fixed single session instead: replace `--sessions ...` with `--cmd "uwsm start hyprland-uwsm.desktop"`.
+- X11 sessions: add `--xsessions /usr/share/xsessions`.
+- If tuigreet shows a black screen, switch to another TTY (Ctrl+Alt+F2), log in, and check `journalctl -u greetd -b`.
+- Config lives in `/etc/greetd/config.toml`; the greeter runs as the `greeter` user created by the package.
+
+---
+
+## 7. Hyprland + Wayland Essentials
+
+```
+paru -S caelestia-cli
+caelestia install
+```
+
+---
+
+## 8. Bluetooth
+
+```
+sudo pacman -S --needed bluez bluez-utils
+sudo systemctl enable --now bluetooth
+```
+
+Pair a device:
+
+```
+bluetoothctl
+power on
+scan on
+pair XX:XX:XX:XX:XX:XX
+trust XX:XX:XX:XX:XX:XX
+connect XX:XX:XX:XX:XX:XX
+```
+
+---
+
+## 9. Everyday Tools
+
+```
+sudo pacman -S --needed man-db man-pages bash-completion fish ripgrep fd bat eza fzf btop unzip unrar p7zip rsync wget curl tree htop ntfs-3g exfatprogs dosfstools xdg-user-dirs xdg-utils dolphin
+xdg-user-dirs-update
+```
+
+Notes:
+- `ntfs-3g`/`exfatprogs` = mount Windows/USB drives.
+- `xdg-user-dirs-update` creates Documents, Downloads, etc.
+
+---
+
+## 10. Firewall (optional)
+
+```
+sudo pacman -S --needed ufw
+sudo systemctl enable --now ufw
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw enable
+sudo ufw status verbose
+```
+
+---
+
+## 11. Btrfs Maintenance
+
+```
+sudo pacman -S --needed btrfs-assistant
+sudo systemctl enable --now btrfs-scrub@-.timer
+```
+
+Manual checks:
+
+```
+sudo btrfs filesystem usage /
+sudo snapper -c root list
+```
+
+Notes:
+- `btrfs-scrub@-.timer` scrubs the root filesystem monthly (`-` = `/`).
+- `btrfs-assistant` = GUI for snapper snapshots (optional).
+- Boot a snapshot from the GRUB "Arch Linux snapshots" submenu (needs `grub-btrfsd` from step 12 of install).
+
+---
+
+## 12. Reboot & Verify
+
+```
+reboot
+```
+
+After reboot you should see tuigreet. Log in, pick the Hyprland session, then check:
+
+```
+echo $XDG_SESSION_TYPE        # wayland
+systemctl --failed
+journalctl -p 3 -xb
+```
+
+Notes:
+- `systemctl --failed` should list nothing.
+- `journalctl -p 3` = errors since boot; fix anything GPU/greetd related first.
