@@ -12,6 +12,24 @@ read -rp "Disk to install to (e.g. /dev/sda): " DISK
 
 read -rp "Username: " USERNAME
 read -rp "Hostname: " HOSTNAME_
+
+echo
+echo "Keyboard layout (console keymap). Examples: us, pl, es, de, fr, lt"
+echo "Type 'list' to see all, or press Enter for us."
+while true; do
+    read -rp "Keymap [us]: " KEYMAP
+    KEYMAP="${KEYMAP:-us}"
+    if [[ "$KEYMAP" == "list" ]]; then
+        localectl list-keymaps | less
+        continue
+    fi
+    if localectl list-keymaps | grep -qx -- "$KEYMAP"; then
+        loadkeys "$KEYMAP"
+        break
+    fi
+    echo "Unknown keymap '$KEYMAP', try again."
+done
+
 while true; do
     read -rsp "Password (used for user and root): " PASS; echo
     read -rsp "Repeat password: " PASS2; echo
@@ -83,6 +101,7 @@ hwclock --systohc
 echo "en_US.UTF-8 UTF-8" >> /etc/locale.gen
 locale-gen
 echo "LANG=en_US.UTF-8" > /etc/locale.conf
+printf 'KEYMAP=%s\nFONT=ter-v16n\n' "$KEYMAP" > /etc/vconsole.conf
 echo "$HOSTNAME_" > /etc/hostname
 cat >> /etc/hosts <<EOF
 127.0.0.1  localhost
@@ -127,7 +146,7 @@ grub-mkconfig -o /boot/grub/grub.cfg
 CHROOT
 
 arch-chroot /mnt /usr/bin/env \
-    USERNAME="$USERNAME" HOSTNAME_="$HOSTNAME_" PASS="$PASS" \
+    USERNAME="$USERNAME" HOSTNAME_="$HOSTNAME_" PASS="$PASS" KEYMAP="$KEYMAP" \
     bash /root/chroot.sh
 
 rm -f /mnt/root/chroot.sh
