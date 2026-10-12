@@ -1,0 +1,345 @@
+# Arch Linux Install — My Guide
+
+> How to use this file: sections are named by install phase and run top-to-bottom.
+> New notes get appended at the bottom; they get folded into the right section.
+> Replace every PLACEHOLDER before running a command.
+
+---
+
+## 1. Partitioning
+
+### cfdisk — partition the disk
+
+```
+cfdisk /dev/sdX
+```
+
+Partition plan (GPT):
+
+```
+new - 1G          - Type = EFI filesystem
+new - "ramsize"G  - Type = Linux swap
+new - "ALL"G      - Type = Linux filesystem
+
+Write = yes
+```
+
+Notes:
+- `/dev/sdX` = target disk (PLACEHOLDER — confirm with `lsblk`).
+- 1G = EFI/boot partition.
+- "ramsize"G = swap, sized to match RAM.
+- remaining = root filesystem.
+
+---
+
+## 2. Format, Swap & Mount
+
+### Format the EFI partition
+
+```
+mkfs.fat -F32 /dev/sdX1
+```
+
+### Create & enable swap
+
+```
+mkswap /dev/sdX2
+swapon /dev/sdX2
+free -h          # verify swap is active
+```
+
+### Format the root partition (btrfs)
+
+```
+mkfs.btrfs -L "Linux" /dev/sdX3
+```
+
+### Mount root & create btrfs subvolumes
+
+```
+mount /dev/sdX3 /mnt
+btrfs subvolume create /mnt/@
+btrfs subvolume create /mnt/@home
+btrfs subvolume create /mnt/@log
+btrfs subvolume create /mnt/@cache
+```
+
+### Unmount top-level (ready to remount subvolumes)
+
+```
+umount /mnt
+```
+
+Notes:
+- `/dev/sdX1` = EFI, `/dev/sdX2` = swap, `/dev/sdX3` = root.
+- `"Linux"` = btrfs filesystem label.
+- Subvolumes: `@` = root, `@home` = /home, `@log` = /var/log, `@cache` = /var/cache. (`/.snapshots` is deliberately **not** a subvolume here — snapper creates and owns it, see step 12.)
+- Subvolumes are created on the top-level mount; they get mounted for real in step 3.
+
+---
+
+## 3. Mount Subvolumes
+
+### Mount root subvolume (@) & create mount points
+
+```
+mount -o noatime,compress=zstd,space_cache=v2,subvol=@ /dev/sdX3 /mnt
+mkdir -p /mnt/{boot/efi,home,var/log,var/cache}
+```
+
+### Mount remaining subvolumes
+
+```
+mount -o noatime,compress=zstd,space_cache=v2,subvol=@home /dev/sdX3 /mnt/home
+mount -o noatime,compress=zstd,space_cache=v2,subvol=@log /dev/sdX3 /mnt/var/log
+mount -o noatime,compress=zstd,space_cache=v2,subvol=@cache /dev/sdX3 /mnt/var/cache
+```
+
+### Verify mounts
+
+```
+btrfs subvolume list /mnt
+lsblk
+```
+
+### Mount the EFI partition
+
+```
+mount /dev/sdX1 /mnt/boot/efi
+```
+
+Notes:
+- Mount options: `noatime`, `compress=zstd`, `space_cache=v2`.
+- Subvolume → mount point: `@` → /mnt, `@home` → /mnt/home, `@log` → /mnt/var/log, `@cache` → /mnt/var/cache.
+- EFI → /mnt/boot/efi.
+
+---
+
+## 4. Install Base System
+
+### pacstrap — install base packages
+
+```
+pacstrap -K /mnt base base-devel linux linux-headers linux-firmware btrfs-progs vim nano networkmanager grub efibootmgr snapper snap-pac grub-btrfs git fish terminus-font fastfetch
+```
+
+Notes — what each package is for:
+- `-K` = initialize the pacman keyring in the new root.
+- `base`, `base-devel` = core system + build tools.
+- `linux`, `linux-headers`, `linux-firmware` = kernel, headers, firmware.
+- `btrfs-progs` = btrfs tools.
+- `vim`, `nano` = text editors.
+- `networkmanager` = network management.
+- `grub`, `efibootmgr` = bootloader + EFI boot entries.
+- `snapper`, `snap-pac`, `grub-btrfs` = btrfs snapshots + boot-menu entries.
+- `git` = version control.
+- `fish` = shell.
+- `terminus-font` = console font.
+
+---
+
+## 5. Generate fstab
+
+### Write fstab
+
+```
+genfstab -U /mnt >> /mnt/etc/fstab
+```
+
+### Verify
+
+```
+cat /mnt/etc/fstab
+```
+
+Notes:
+- `-U` = write UUIDs instead of device names (stable across reboots).
+- `>>` appends the generated lines into `/mnt/etc/fstab`.
+
+---
+
+## 6. Chroot
+
+```
+arch-chroot /mnt
+```
+
+Notes:
+- `arch-chroot /mnt` enters the installed system. Every command until `exit` runs inside `/mnt`.
+
+---
+
+## 7. Timezone / Locale / Hostname
+
+### Timezone
+
+```
+ln -sf /usr/share/zoneinfo/Europe/Vilnius /etc/localtime
+hwclock --systohc
+```
+
+### Locale
+
+```
+echo "en_US.UTF-8 UTF-8" >> /etc/locale.gen
+locale-gen
+```
+
+### Language (system LANG)
+
+```
+echo "LANG=en_US.UTF-8" > /etc/locale.conf
+```
+
+### Hostname
+
+```
+echo "Hostname" > /etc/hostname
+cat >> /etc/hosts << EOF
+127.0.0.1  localhost
+::1        localhost
+127.0.1.1  archlinux.org arch
+EOF
+```
+
+Notes:
+- `/etc/locale.gen` = list of locales to **generate** (format `locale encoding`) → run `locale-gen` after editing.
+- `/etc/locale.conf` = sets `LANG` for the whole system → this is where `LANG=` goes, **not** locale.gen.
+- `/etc/hosts` uses `cat >>` so the heredoc actually gets written; the lines are literal, no `>` prompts.
+
+⚠️ **Fix if you see** `Failed to set locale.` / `locale: Cannot set LC_* to default locale: No such file or directory`:
+
+```
+sudo sed -i '/^LANG=/d' /etc/locale.gen
+sudo sed -i 's/^# *\(en_US.UTF-8 UTF-8\)$/\1/' /etc/locale.gen
+sudo locale-gen
+echo "LANG=en_US.UTF-8" | sudo tee /etc/locale.conf
+locale -a
+```
+
+- Cause: `LANG=` was written to `locale.gen`, so `en_US.UTF-8` never got generated.
+
+---
+
+## 8. Users & Passwords
+
+### Set root password
+
+```
+passwd
+```
+
+### Create user
+
+```
+useradd -m -G wheel -s /bin/fish arch
+passwd arch
+```
+
+### Grant sudo (wheel group)
+
+```
+EDITOR=nano visudo
+# uncomment: %wheel ALL=(ALL:ALL) ALL
+```
+
+Notes:
+- `passwd` = set the root password.
+- `-m` = create home directory, `-G wheel` = add to sudo group, `-s /bin/fish` = default shell.
+- `passwd arch` = set the new user's password.
+- `visudo` = safe sudoers editor; uncomment `%wheel ALL=(ALL:ALL) ALL` to let wheel users run sudo.
+
+---
+
+## 9. Enable Services
+
+```
+systemctl enable NetworkManager
+```
+
+Notes:
+- Enables NetworkManager at boot so networking works after reboot.
+
+---
+
+## 10. Bootloader
+
+```
+grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB
+grub-mkconfig -o /boot/grub/grub.cfg
+```
+
+Notes:
+- `--target=x86_64-efi` = install GRUB for 64-bit UEFI (you had `x86_efi-efi` — fixed).
+- `--efi-directory=/boot/efi` = where the EFI partition is mounted.
+- `--bootloader-id=GRUB` = name of the EFI boot entry.
+- `grub-mkconfig` = generate `/boot/grub/grub.cfg`.
+
+---
+
+## 11. Reboot & First Boot
+
+```
+exit
+umount -R /mnt
+reboot
+```
+
+Notes:
+- `exit` = leave the chroot, `umount -R /mnt` = unmount everything, `reboot` = restart.
+- Remove the install USB so it boots from the disk.
+
+---
+
+## 12. Snapper & Snapshots (grub-btrfs)
+
+Run this **after first boot**.
+
+### Check first — `create-config` only runs ONCE
+
+```
+ls /etc/snapper/configs/
+sudo snapper -c root list
+findmnt /.snapshots
+```
+
+### Create the root config (once)
+
+```
+sudo umount /.snapshots
+sudo rm -r /.snapshots
+sudo snapper -c root create-config /
+sudo btrfs subvolume delete /.snapshots
+sudo mkdir /.snapshots
+sudo mount -o noatime,compress=zstd,space_cache=v2,subvol=@snapshots /dev/sdX3 /.snapshots
+
+sudo chmod 750 /.snapshots
+sudo chown :arch /.snapshots
+```
+
+## Edit snapper
+
+sudo nano /etc/snapper/configs/root 
+
+TIMELINE_MIN_AGE="3600"
+TIMELINE_LIMIT_HOURLY="4"
+TIMELINE_LIMIT_DAILY="3"
+TIMELINE_LIMIT_WEEKLY="3"
+TIMELINE_LIMIT_MONTHLY="2"
+TIMELINE_LIMIT_QUARTERLY="1"
+TIMELINE_LIMIT_YEARLY="0"
+
+### Enable snapshot services
+
+```
+sudo systemctl enable --now snapper-timeline.timer
+sudo systemctl enable --now snapper-cleanup.timer
+sudo systemctl enable --now grub-btrfsd
+
+sudo grub-mkconfig -o /boot/grub/grub.cfg 
+```
+
+- `snapper-timeline.timer` = creates snapshots automatically (hourly by default).
+- `snapper-cleanup.timer` = auto-deletes old snapshots within the limits set in `/etc/snapper/configs/root`.
+- `grub-btrfsd` = watches `/.snapshots` and regenerates `grub.cfg` so snapshots appear in the GRUB menu.
+- `snap-pac` needs no setup — its pacman hook takes a snapshot before/after every `pacman` transaction.
